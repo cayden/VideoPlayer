@@ -4,13 +4,15 @@ import java.net.URI;
 import java.util.ArrayList;
 import java.util.List;
 
+import com.proxy.Config.ProxyRequest;
+import com.proxy.Config.ProxyResponse;
 
 
 import android.text.TextUtils;
 import android.util.Log;
 
 /**
- * Http处理类
+ * Http报文处理类
  * @author hellogv
  *
  */
@@ -18,6 +20,7 @@ public class HttpParser {
 	final static public String TAG = "HttpParser";
 	final static private String RANGE_PARAMS="Range: bytes=";
 	final static private String RANGE_PARAMS_0="Range: bytes=0-";
+	final static private String CONTENT_RANGE_PARAMS="Content-Range: bytes ";
 	
 	private static final  int HEADER_BUFFER_LENGTH_MAX = 1024 * 10;
 	private byte[] headerBuffer = new byte[HEADER_BUFFER_LENGTH_MAX];
@@ -31,15 +34,6 @@ public class HttpParser {
 	private int localPort;
 	/** 本地服务器地址 */
 	private String localHost;
-	
-	public class ProxyRequest{
-		/**Http Request 内容*/
-		public String _body;
-		/**对应的预加载文件路径*/
-		public String _prebufferFilePath;
-		/**Ranage的位置*/
-		public long _rangePosition;
-	}
 	
 	public HttpParser(String rHost,int rPort,String lHost,int lPort){
 		remoteHost=rHost;
@@ -60,8 +54,8 @@ public class HttpParser {
 	 * @return
 	 */
 	public byte[] getRequestBody(byte[] source,int length){
-		List<byte[]> httpRequest=getHttpBody(C.HTTP_REQUEST_BEGIN, 
-				C.HTTP_BODY_END, 
+		List<byte[]> httpRequest=getHttpBody(Config.HTTP_REQUEST_BEGIN, 
+				Config.HTTP_BODY_END, 
 				source,
 				length);
 		if(httpRequest.size()>0){
@@ -72,13 +66,13 @@ public class HttpParser {
 	
 	/**
 	 * Request报文解析转换ProxyRequest
-	 * @param requestBuffer
+	 * @param bodyBytes
 	 * @return
 	 */
-	public ProxyRequest getProxyRequest(byte[] requestBuffer){
+	public ProxyRequest getProxyRequest(byte[] bodyBytes){
 		ProxyRequest result=new ProxyRequest();
 		//获取Body
-		result._body=new String(requestBuffer);
+		result._body=new String(bodyBytes);
 		
 		// 把request中的本地ip改为远程ip
 		result._body = result._body.replace(localHost, remoteHost);
@@ -89,52 +83,69 @@ public class HttpParser {
 			result._body = result._body.replace(":" + localPort, ":"+ remotePort);
 		//不带Ranage则添加补上，方便后面处理
 		if(result._body.contains(RANGE_PARAMS)==false)
-			result._body = result._body.replace(C.HTTP_BODY_END,
-					"\r\n"+RANGE_PARAMS_0+C.HTTP_BODY_END);
-		Log.e(TAG, result._body);
-		
-		// 获取文件名
-		String fileName=getURIPath(result._body);
-		fileName=Utils.urlToFileName(fileName);
-		result._prebufferFilePath=C.getBufferDir()+"/"+fileName;
-		Log.e(TAG, "_prebufferFilePath:"+result._prebufferFilePath);
-		
+			result._body = result._body.replace(Config.HTTP_BODY_END,
+					"\r\n"+RANGE_PARAMS_0+Config.HTTP_BODY_END);
+		Log.i(TAG, result._body);
+
 		//获取Ranage的位置
-		int startPos=result._body.indexOf(RANGE_PARAMS)+RANGE_PARAMS.length();
-		int endPos=result._body.indexOf("-", startPos);
-		String rangePosition=result._body.substring(startPos, endPos);
-		Log.e(TAG,"------->rangePosition:"+rangePosition);
+		String rangePosition=Utils.getSubString(result._body,RANGE_PARAMS,"-");
+		Log.i(TAG,"------->rangePosition:"+rangePosition);
 		result._rangePosition = Integer.valueOf(rangePosition);
 		
 		return result;
 	}
 	
 	/**
-	 * 获取Response报文
+	 * 获取ProxyResponse
 	 * @param source
 	 * @param length
-	 * @return [0]:Response报文；[1]:Response报文后的二进制数据
 	 */
-	public List<byte[]> getResponseBody(byte[] source,int length){
-		List<byte[]> httpResponse=getHttpBody(C.HTTP_RESPONSE_BEGIN, 
-				C.HTTP_BODY_END, 
+	public ProxyResponse getProxyResponse(byte[] source,int length){
+		List<byte[]> httpResponse=getHttpBody(Config.HTTP_RESPONSE_BEGIN, 
+				Config.HTTP_BODY_END, 
 				source,
 				length);
 		
-		return httpResponse;
+		if (httpResponse.size() == 0)
+			return null;
+		
+		ProxyResponse result=new ProxyResponse();
+		
+		//获取Response正文
+		result._body=httpResponse.get(0);
+		String text = new String(result._body);
+		
+		Log.i(TAG + "<---", text);
+		//获取二进制数据
+		if(httpResponse.size()==2)
+			result._other = httpResponse.get(1);
+		
+		//样例：Content-Range: bytes 2267097-257405191/257405192
+		try {
+			// 获取起始位置
+			String currentPosition = Utils.getSubString(text,CONTENT_RANGE_PARAMS, "-");
+			result._currentPosition = Integer.valueOf(currentPosition);
+
+			// 获取最终位置
+			String startStr = CONTENT_RANGE_PARAMS + currentPosition + "-";
+			String duration = Utils.getSubString(text, startStr, "/");
+			result._duration = Integer.valueOf(duration);
+		} catch (Exception ex) {
+			Log.e(TAG, Utils.getExceptionMessage(ex));
+		}
+		return result;
 	}
 	
 	/**
-	 * 替换Request报文中的Range位置
+	 * 替换Request报文中的Range位置,"Range: bytes=0-" -> "Range: bytes=XXX-"
 	 * @param requestStr
 	 * @param position
 	 * @return
 	 */
 	public String modifyRequestRange(String requestStr,int position){
-		int startIndex=requestStr.indexOf(RANGE_PARAMS);
-		int endIndex=requestStr.indexOf("\r\n", startIndex);
-		String str=requestStr.substring(startIndex, endIndex);
-		String result = requestStr.replaceAll(str, RANGE_PARAMS+position+"-");
+		String str=Utils.getSubString(requestStr, RANGE_PARAMS, "-");
+		str=str+"-";
+		String result = requestStr.replaceAll(str, position+"-");
 		return result;
 	}
 	
@@ -150,6 +161,7 @@ public class HttpParser {
 		String responseStr = new String(headerBuffer);
 		if (responseStr.contains(beginStr)
 				&& responseStr.contains(endStr)) {
+			
 			int startIndex=responseStr.indexOf(beginStr, 0);
 			int endIndex = responseStr.indexOf(endStr, startIndex);
 			endIndex+=endStr.length();
@@ -163,24 +175,10 @@ public class HttpParser {
 				System.arraycopy(headerBuffer, header.length, other, 0,other.length);
 				result.add(other);
 			}
-			//Log.e("----------------","total:"+headerBufferLength+",header.length:"+header.length);
 			clearHttpBody();
 		}
 		
 		return result;
 	}
 	
-	private String getURIPath(String requestStr) {
-		try {
-			int startIndex = requestStr.indexOf(C.HTTP_REQUEST_BEGIN)
-					+ C.HTTP_REQUEST_BEGIN.length();
-			int endIndex = requestStr.indexOf(C.HTTP_REQUEST_LINE1_END);
-			String result = requestStr.substring(startIndex, endIndex);
-			result="http://127.0.0.1"+result;
-			URI uri=new URI(result);
-			return uri.getPath();
-		} catch (Exception e) {
-			return null;
-		}
-	}
 }

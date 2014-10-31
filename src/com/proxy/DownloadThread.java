@@ -5,19 +5,12 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.OutputStream;
-import java.io.RandomAccessFile;
+import java.net.HttpURLConnection;
 import java.net.URL;
-import java.net.URLConnection;
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.Map;
-import java.util.Map.Entry;
-
 
 import android.util.Log;
 /**
- * 下载模块
+ * 下载模块，支持断点下载
  * @author hellogv
  * 
  */
@@ -25,11 +18,9 @@ public class DownloadThread extends Thread {
 	static private final String TAG="DownloadThread";
 	private String mUrl;
 	private String mPath;
-
-	private int mDownloadSize;
-	
+	private long mDownloadSize;
 	private int mTargetSize;
-	private boolean mStop,mDeleteFile;
+	private boolean mStop;
 	private boolean mDownloading;
 	private boolean mStarted;
 	private boolean mError;
@@ -37,11 +28,17 @@ public class DownloadThread extends Thread {
 	public DownloadThread(String url, String savePath,int targetSize) {
 		mUrl = url;
 		mPath = savePath;
-		mTargetSize=targetSize;
-		mDownloadSize = 0;
 		
+		//如果文件存在，则继续
+		File file=new File(mPath);
+		if(file.exists()){
+			mDownloadSize =  file.length();
+		}else{
+			mDownloadSize = 0;
+		}
+		
+		mTargetSize=targetSize;
 		mStop = false;
-		mDeleteFile=false;
 		mDownloading = false;
 		mStarted = false;
 		mError=false;
@@ -63,11 +60,9 @@ public class DownloadThread extends Thread {
 		}
 	}
 
-	/** 停止下载线程, deleteFile是否要删除临时文件 */
-	public void stopThread(boolean deleteFile) {
+	/** 停止下载线程*/
+	public void stopThread() {
 		mStop = true;
-		mDeleteFile=deleteFile;
-		
 	}
 
 	/** 是否正在下载 */
@@ -83,17 +78,21 @@ public class DownloadThread extends Thread {
 		return mError;
 	}
 	
-	public int getDownloadedSize() {
+	public long getDownloadedSize() {
 		return mDownloadSize;
 	}
 
 	/** 是否下载成功 */
-	public synchronized boolean isDownloadSuccessed() {
-		return (mDownloadSize != 0 && mDownloadSize == mTargetSize);
+	public boolean isDownloadSuccessed() {
+		return (mDownloadSize != 0 && mDownloadSize >= mTargetSize);
 	}
 
-	private synchronized void download() {
-		int mTotalSize = 0;
+	private void download() {
+		//下载成功则关闭
+		if(isDownloadSuccessed()){
+			Log.i(TAG,"...DownloadSuccessed...");
+			return;
+		}
 		InputStream is = null;
 		FileOutputStream os = null;
 		if (mStop) {
@@ -101,12 +100,18 @@ public class DownloadThread extends Thread {
 		}
 		try {
 			URL url = new URL(mUrl);
-			URLConnection con = url.openConnection();
-
-			mTotalSize = con.getContentLength();
-			is = con.getInputStream();
-			os = new FileOutputStream(mPath);
-			Log.e(TAG,mPath);
+			HttpURLConnection urlConnection = (HttpURLConnection) url.openConnection();
+			urlConnection.setRequestMethod("GET");
+			urlConnection.setInstanceFollowRedirects(true);//允许重定向
+			is = urlConnection.getInputStream();
+			if(mDownloadSize==0){//全新文件
+				os = new FileOutputStream(mPath);
+				Log.i(TAG,"download file:"+mPath);
+			}
+			else{//追加数据
+				os = new FileOutputStream(mPath,true);
+				Log.i(TAG,"append exists file:"+mPath);
+			}
 			int len = 0;
 			byte[] bs = new byte[1024];
 			if (mStop) {
@@ -120,8 +125,8 @@ public class DownloadThread extends Thread {
 			}
 		} catch (Exception e) {
 			mError=true;
-			Log.e(TAG,"download error:"+e.toString()+"");
-			Log.e(TAG,Utils.getExceptionMessage(e));
+			Log.i(TAG,"download error:"+e.toString()+"");
+			Log.i(TAG,Utils.getExceptionMessage(e));
 		} finally {
 			if (os != null) {
 				try {
@@ -134,19 +139,14 @@ public class DownloadThread extends Thread {
 					is.close();
 				} catch (IOException e){}
 			}
-
-			if(mDeleteFile)
-			{
-				try {
-					Thread.sleep(50);
-				} catch (InterruptedException e) {}
-				
-				File file = new File(mPath);
-				file.delete();
-			}
 			mDownloading = false;
 			
-			Log.e(TAG,"mTotalSize:"+mTotalSize+",mTargetSize:"+mTargetSize);
+			//清除空文件
+			File nullFile = new File(mPath);
+			if(nullFile.exists() && nullFile.length()==0)
+				nullFile.delete();
+			
+			Log.i(TAG,"mDownloadSize:"+mDownloadSize+",mTargetSize:"+mTargetSize);
 		}
 	}
 }
